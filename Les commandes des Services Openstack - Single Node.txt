@@ -1,0 +1,961 @@
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3-pip python3-dev libffi-dev gcc libssl-dev
+
+sudo apt install mysql-server
+
+sudo apt install -y python3-openstackclient
+
+sudo apt install rabbitmq-server -y
+sudo rabbitmqctl add_user openstack admin
+sudo rabbitmqctl set_permissions openstack ".*" ".*" ".*"
+
+//////////////Service Keystone//////////////
+
+sudo mysql -u root -p
+
+CREATE DATABASE keystone;
+CREATE USER 'keystone'@'localhost' IDENTIFIED BY 'KEYSTONE_DBPASS';
+GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost';
+CREATE USER 'keystone'@'%' IDENTIFIED BY 'KEYSTONE_DBPASS';
+GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%';
+FLUSH PRIVILEGES;
+
+sudo apt install -y keystone
+
+sudo nano /etc/keystone/keystone.conf
+
+[database]
+connection = mysql+pymysql://keystone:KEYSTONE_DBPASS@localhost/keystone
+
+[token]
+provider = fernet
+
+sudo keystone-manage db_sync
+
+sudo keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+sudo keystone-manage credential_setup --keystone-user keystone --keystone-group keystone
+
+sudo keystone-manage bootstrap --bootstrap-password admin \
+  --bootstrap-admin-url http://localhost:5000/v3/ \
+  --bootstrap-internal-url http://localhost:5000/v3/ \
+  --bootstrap-public-url http://localhost:5000/v3/ \
+  --bootstrap-region-id RegionOne
+
+sudo nano /etc/apache2/apache2.conf
+ServerName localhost
+
+sudo service apache2 restart
+
+export OS_USERNAME=admin
+export OS_PASSWORD=admin
+export OS_PROJECT_NAME=admin
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_AUTH_URL=http://localhost:5000/v3
+export OS_IDENTITY_API_VERSION=3
+
+openstack domain create --description "An Example Domain" example
+
+openstack project create --domain default \
+  --description "Service Project" service
+
+openstack project create --domain default \
+  --description "Demo Project" myproject
+
+openstack user create --domain default \
+  --password-prompt myuser
+
+openstack role create myrole
+
+openstack role add --project myproject --user myuser myrole
+
+unset OS_AUTH_URL OS_PASSWORD
+
+openstack --os-auth-url http://localhost:5000/v3 \
+  --os-project-domain-name Default --os-user-domain-name Default \
+  --os-project-name admin --os-username admin token issue
+
+openstack --os-auth-url http://localhost:5000/v3 \
+  --os-project-domain-name Default --os-user-domain-name Default \
+  --os-project-name myproject --os-username myuser token issue
+
+nano admin-openrc
+
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=admin
+export OS_AUTH_URL=http://localhost:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_IMAGE_API_VERSION=2
+
+nano demo-openrc
+
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_NAME=myproject
+export OS_USERNAME=myuser
+export OS_PASSWORD=admin
+export OS_AUTH_URL=http://localhost:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_IMAGE_API_VERSION=2
+
+. admin-openrc
+openstack token issue
+
+
+//////////////Service Glance//////////////
+
+sudo mysql -u root -p
+
+CREATE DATABASE glance;
+CREATE USER 'glance'@'localhost' IDENTIFIED BY 'GLANCE_DBPASS';
+GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost';
+CREATE USER 'glance'@'%' IDENTIFIED BY 'GLANCE_DBPASS';
+GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%';
+FLUSH PRIVILEGES;
+
+. admin-openrc
+
+openstack user create --domain default --password-prompt glance
+
+openstack role add --project service --user glance admin
+
+openstack service create --name glance \
+  --description "OpenStack Image" image
+
+openstack endpoint create --region RegionOne \
+  image public http://localhost:9292
+
+openstack endpoint create --region RegionOne \
+  image internal http://localhost:9292
+
+openstack endpoint create --region RegionOne \
+  image admin http://localhost:9292
+
+sudo apt install -y glance
+
+sudo nano /etc/glance/glance-api.conf
+
+[database]
+connection = mysql+pymysql://glance:GLANCE_DBPASS@localhost/glance
+
+[keystone_authtoken]
+www_authenticate_uri  = http://localhost:5000
+auth_url = http://localhost:5000
+memcached_servers = localhost:11211
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = glance
+password = admin
+
+[paste_deploy]
+flavor = keystone
+
+[glance_store]
+stores = file,http
+default_store = file
+filesystem_store_datadir = /var/lib/glance/images/
+
+sudo glance-manage db_sync
+
+sudo service glance-api restart
+
+. admin-openrc
+
+wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img
+
+glance image-create --name "cirros" \
+  --file cirros-0.4.0-x86_64-disk.img \
+  --disk-format qcow2 --container-format bare \
+  --visibility=public
+
+glance image-list
+
+
+//////////////Service Placement//////////////
+
+sudo mysql -u root -p
+
+CREATE DATABASE placement;
+CREATE USER 'placement'@'localhost' IDENTIFIED BY 'PLACEMENT_DBPASS';
+GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'localhost';
+CREATE USER 'placement'@'%' IDENTIFIED BY 'PLACEMENT_DBPASS';
+GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'%';
+FLUSH PRIVILEGES;
+
+. admin-openrc
+
+openstack user create --domain default --password-prompt placement
+
+openstack role add --project service --user placement admin
+
+openstack service create --name placement \
+  --description "Placement API" placement
+
+openstack endpoint create --region RegionOne \
+  placement public http://localhost:8778
+
+openstack endpoint create --region RegionOne \
+  placement internal http://localhost:8778
+
+openstack endpoint create --region RegionOne \
+  placement admin http://localhost:8778
+
+sudo apt install placement-api
+
+sudo nano /etc/placement/placement.conf
+
+[placement_database]
+connection = mysql+pymysql://placement:PLACEMENT_DBPASS@localhost/placement
+
+[api]
+auth_strategy = keystone
+
+[keystone_authtoken]
+auth_url = http://localhost:5000/v3
+memcached_servers = localhost:11211
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = placement
+password = admin
+
+sudo placement-manage db sync
+
+sudo service apache2 restart
+
+. admin-openrc
+
+sudo placement-status upgrade check
+
+pip3 install osc-placement
+openstack --os-placement-api-version 1.2 resource class list --sort-column name
+openstack --os-placement-api-version 1.6 trait list --sort-column name
+
+
+//////////////Service Nova//////////////
+
+CREATE DATABASE nova_api;
+CREATE DATABASE nova;
+CREATE DATABASE nova_cell0;
+
+CREATE USER 'nova'@'localhost' IDENTIFIED BY 'NOVA_DBPASS';
+CREATE USER 'nova'@'%' IDENTIFIED BY 'NOVA_DBPASS';
+
+GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost';
+GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%';
+
+GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost';
+GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%';
+
+GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'localhost';
+GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'%';
+
+FLUSH PRIVILEGES;
+
+. admin-openrc
+
+openstack user create --domain default --password-prompt nova
+
+openstack role add --project service --user nova admin
+
+openstack service create --name nova \
+  --description "OpenStack Compute" compute
+
+openstack endpoint create --region RegionOne \
+  compute public http://localhost:8774/v2.1
+
+openstack endpoint create --region RegionOne \
+  compute internal http://localhost:8774/v2.1
+
+openstack endpoint create --region RegionOne \
+  compute admin http://localhost:8774/v2.1
+
+sudo apt install nova-api nova-conductor nova-novncproxy nova-scheduler nova-compute -y
+
+sudo nano /etc/nova/nova.conf
+
+[DEFAULT]
+transport_url = rabbit://openstack:admin@localhost
+my_ip = 127.0.0.1
+use_neutron = true
+firewall_driver = nova.virt.firewall.NoopFirewallDriver
+
+[api_database]
+connection = mysql+pymysql://nova:NOVA_DBPASS@localhost/nova_api
+
+[database]
+connection = mysql+pymysql://nova:NOVA_DBPASS@localhost/nova
+
+[api]
+auth_strategy = keystone
+
+[keystone_authtoken]
+auth_url = http://localhost:5000/
+memcached_servers = localhost:11211
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = nova
+password = admin
+
+[service_user]
+send_service_user_token = true
+auth_url = https://localhost/identity
+auth_strategy = keystone
+auth_type = password
+project_domain_name = Default
+project_name = service
+user_domain_name = Default
+username = nova
+password = admin
+
+[vnc]
+enabled = true
+server_listen = $my_ip
+server_proxyclient_address = $my_ip
+novncproxy_base_url = http://localhost:6080/vnc_auto.html
+
+[glance]
+api_servers = http://localhost:9292
+
+[oslo_concurrency]
+lock_path = /var/lib/nova/tmp
+
+[placement]
+region_name = RegionOne
+project_domain_name = Default
+project_name = service
+auth_type = password
+user_domain_name = Default
+auth_url = http://localhost:5000/v3
+username = placement
+password = admin
+
+sudo nova-manage api_db sync
+sudo nova-manage cell_v2 map_cell0
+sudo nova-manage cell_v2 create_cell --name=cell1
+sudo nova-manage db sync
+
+sudo nova-manage cell_v2 list_cells
+
+sudo service nova-api restart
+sudo service nova-scheduler restart
+sudo service nova-conductor restart
+sudo service nova-novncproxy restart
+sudo service nova-compute restart
+
+sudo systemctl restart nova-api nova-scheduler nova-conductor nova-novncproxy nova-compute
+sudo systemctl enable nova-api nova-scheduler nova-conductor nova-novncproxy nova-compute
+
+. admin-openrc
+
+openstack compute service list
+
+openstack catalog list
+
+openstack image list
+
+sudo nova-status upgrade check
+
+
+//////////////Service Neutron//////////////
+
+sudo mysql -u root -p
+
+CREATE DATABASE neutron;
+CREATE USER 'neutron'@'localhost' IDENTIFIED BY 'NEUTRON_DBPASS';
+GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost';
+CREATE USER 'neutron'@'%' IDENTIFIED BY ' NEUTRON_DBPASS';
+GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%';
+FLUSH PRIVILEGES;
+
+. admin-openrc
+
+openstack user create --domain default --password-prompt neutron
+
+openstack role add --project service --user neutron admin
+
+openstack service create --name neutron \
+  --description "OpenStack Networking" network
+
+openstack endpoint create --region RegionOne \
+  network public http://localhost:9696
+
+openstack endpoint create --region RegionOne \
+  network internal http://localhost:9696
+
+openstack endpoint create --region RegionOne \
+  network admin http://localhost:9696
+
+sudo apt install neutron-server neutron-plugin-ml2 \
+  neutron-openvswitch-agent neutron-dhcp-agent \
+  neutron-metadata-agent
+
+sudo nano /etc/neutron/neutron.conf
+
+[DEFAULT]
+core_plugin = ml2
+service_plugins =
+transport_url = rabbit://openstack:admin@localhost
+auth_strategy = keystone
+notify_nova_on_port_status_changes = true
+notify_nova_on_port_data_changes = true
+
+[database]
+connection = mysql+pymysql://neutron:NEUTRON_DBPASS@localhost/neutron
+
+[keystone_authtoken]
+www_authenticate_uri = http://localhost:5000
+auth_url = http://localhost:5000
+memcached_servers = localhost:11211
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = neutron
+password = admin
+
+[nova]
+auth_url = http://localhost:5000
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+region_name = RegionOne
+project_name = service
+username = nova
+password = admin
+
+[oslo_concurrency]
+lock_path = /var/lib/neutron/tmp
+
+sudo nano /etc/neutron/plugins/ml2/ml2_conf.ini
+
+[ml2]
+type_drivers = flat,vlan
+tenant_network_types =
+mechanism_drivers = openvswitch
+extension_drivers = port_security
+
+[ml2_type_flat]
+flat_networks = provider
+
+sudo nano /etc/neutron/plugins/ml2/openvswitch_agent.ini
+
+[ovs]
+bridge_mappings = provider:enp0s3
+
+[securitygroup]
+enable_security_group = true
+firewall_driver = iptables_hybrid
+
+sudo nano /etc/sysctl.conf
+
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+
+sudo nano /etc/neutron/dhcp_agent.ini
+
+[DEFAULT]
+interface_driver = openvswitch
+dhcp_driver = neutron.agent.linux.dhcp.Dnsmasq
+enable_isolated_metadata = true
+
+openssl rand -hex 16
+sudo nano /etc/neutron/metadata_agent.ini
+
+[DEFAULT]
+nova_metadata_host = localhost
+metadata_proxy_shared_secret = METADATA_SECRET
+
+sudo nano /etc/nova/nova.conf
+
+[neutron]
+auth_url = http://localhost:5000
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+region_name = RegionOne
+project_name = service
+username = neutron
+password = admin
+service_metadata_proxy = true
+metadata_proxy_shared_secret = METADATA_SECRET
+
+sudo neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head
+
+sudo service nova-api restart
+
+sudo service neutron-server restart
+sudo service neutron-openvswitch-agent restart
+sudo service neutron-dhcp-agent restart
+sudo service neutron-metadata-agent restart
+
+openstack network agent list
+
+
+//////////////Service Cinder//////////////
+
+sudo mysql -u root -p
+
+CREATE DATABASE cinder;
+CREATE USER 'cinder'@'localhost' IDENTIFIED BY 'CINDER_DBPASS';
+GRANT ALL PRIVILEGES ON cinder.* TO 'cinder'@'localhost';
+CREATE USER 'cinder'@'%' IDENTIFIED BY 'CINDER_DBPASS';
+GRANT ALL PRIVILEGES ON cinder.* TO 'cinder'@'%';
+FLUSH PRIVILEGES;
+
+. admin-openrc
+
+openstack user create --domain default --password-prompt cinder
+
+openstack role add --project service --user cinder admin
+
+openstack service create --name cinderv3 \
+  --description "OpenStack Block Storage" volumev3
+
+openstack endpoint create --region RegionOne \
+  volumev3 public http://localhost:8776/v3/%\(project_id\)s
+
+openstack endpoint create --region RegionOne \
+  volumev3 internal http://localhost:8776/v3/%\(project_id\)s
+
+openstack endpoint create --region RegionOne \
+  volumev3 admin http://localhost:8776/v3/%\(project_id\)s
+
+sudo apt install cinder-api cinder-scheduler
+
+sudo nano /etc/cinder/cinder.conf
+
+[DEFAULT]
+transport_url = rabbit://openstack:admin@localhost
+my_ip = 127.0.0.1
+
+[database]
+connection = mysql+pymysql://cinder:CINDER_DBPASS@localhost/cinder
+
+[keystone_authtoken]
+www_authenticate_uri = http://localhost:5000
+auth_url = http://localhost:5000
+memcached_servers = localhost:11211
+auth_type = password
+project_domain_name = default
+user_domain_name = default
+project_name = service
+username = cinder
+password = admin
+
+[oslo_concurrency]
+lock_path = /var/lib/cinder/tmp
+
+sudo cinder-manage db sync
+
+sudo nano /etc/nova/nova.conf
+
+[cinder]
+os_region_name = RegionOne
+
+sudo service nova-api restart
+
+sudo service cinder-scheduler restart
+sudo service apache2 restart
+
+. admin-openrc
+
+openstack volume service list
+
+
+//////////////Horizon//////////////
+
+sudo apt install openstack-dashboard
+
+sudo nano /etc/openstack-dashboard/local_settings.py
+
+SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+
+CACHES = {
+    'default': {
+         'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+         'LOCATION': 'localhost:11211',
+    }
+}
+
+
+OPENSTACK_HOST = "localhost"
+
+OPENSTACK_KEYSTONE_URL = "http://%s:5000/v3" % OPENSTACK_HOST
+
+OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
+
+OPENSTACK_API_VERSIONS = {
+    "identity": 3,
+    "image": 2,
+    "volume": 3,
+}
+
+OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
+
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "user"
+
+OPENSTACK_NEUTRON_NETWORK = {
+    'enable_router': False,
+    'enable_quotas': False,
+    'enable_ipv6': False,
+    'enable_distributed_router': False,
+    'enable_ha_router': False,
+    'enable_fip_topology_check': False,
+}
+
+
+sudo nano /etc/apache2/conf-available/openstack-dashboard.conf
+WSGIApplicationGroup %{GLOBAL}
+
+sudo systemctl reload apache2.service
+
+
+//////////////Service Swift////////////// 
+
+. admin-openrc
+
+openstack user create --domain default --password-prompt swift
+
+openstack role add --project service --user swift admin
+
+openstack service create --name swift \
+  --description "OpenStack Object Storage" object-store
+
+openstack endpoint create --region RegionOne \
+  object-store public http://localhost:8080/v1/AUTH_%\(project_id\)s
+
+openstack endpoint create --region RegionOne \
+  object-store internal http://localhost:8080/v1/AUTH_%\(project_id\)s
+
+openstack endpoint create --region RegionOne \
+  object-store admin http://localhost:8080/v1
+
+sudo apt-get install swift swift-proxy python3-swiftclient \
+  python3-keystoneclient python3-keystonemiddleware \
+  memcached
+
+sudo bash
+cd /etc/swift/
+curl -o /etc/swift/proxy-server.conf https://opendev.org/openstack/swift/raw/branch/master/etc/proxy-server.conf-sample
+
+sudo nano /etc/swift/proxy-server.conf
+
+[DEFAULT]
+bind_port = 8080
+user = swift
+swift_dir = /etc/swift
+
+[pipeline:main]
+pipeline = catch_errors gatekeeper healthcheck proxy-logging cache container_sync bulk ratelimit authtoken keystoneauth container-quotas account-quotas slo dlo versioned_writes proxy-logging proxy-server
+
+[app:proxy-server]
+use = egg:swift#proxy
+account_autocreate = True
+
+[filter:keystoneauth]
+use = egg:swift#keystoneauth
+operator_roles = admin,user
+
+[filter:authtoken]
+paste.filter_factory = keystonemiddleware.auth_token:filter_factory
+www_authenticate_uri = http://localhost:5000
+auth_url = http://localhost:5000
+memcached_servers = localhost:11211
+auth_type = password
+project_domain_id = default
+user_domain_id = default
+project_name = service
+username = swift
+password = admin
+delay_auth_decision = True
+
+[filter:cache]
+use = egg:swift#memcache
+memcache_servers = localhost:11211
+
+
+sudo apt-get install xfsprogs rsync
+
+sudo mkfs.xfs /dev/sdb
+sudo mkfs.xfs /dev/sdc
+
+sudo mkdir -p /srv/node/sdb
+sudo mkdir -p /srv/node/sdc
+
+sudo blkid /dev/sdb
+sudo blkid /dev/sdc
+
+sudo nano /etc/fstab
+
+UUID="<UUID-from-output-above>" /srv/node/sdb xfs noatime 0 2
+UUID="<UUID-from-output-above>" /srv/node/sdc xfs noatime 0 2
+
+sudo mount /srv/node/sdb
+sudo mount /srv/node/sdc
+
+sudo nano /etc/rsyncd.conf
+
+uid = swift
+gid = swift
+log file = /var/log/rsyncd.log
+pid file = /var/run/rsyncd.pid
+address = 127.0.0.1
+
+[account]
+max connections = 2
+path = /srv/node/
+read only = False
+lock file = /var/lock/account.lock
+
+[container]
+max connections = 2
+path = /srv/node/
+read only = False
+lock file = /var/lock/container.lock
+
+[object]
+max connections = 2
+path = /srv/node/
+read only = False
+lock file = /var/lock/object.lock
+
+sudo nano /etc/default/rsync
+RSYNC_ENABLE=true
+
+sudo service rsync start
+
+sudo apt-get install swift swift-account swift-container swift-object
+
+sudo curl -o /etc/swift/account-server.conf https://opendev.org/openstack/swift/raw/branch/master/etc/account-server.conf-sample
+sudo curl -o /etc/swift/container-server.conf https://opendev.org/openstack/swift/raw/branch/master/etc/container-server.conf-sample
+sudo curl -o /etc/swift/object-server.conf https://opendev.org/openstack/swift/raw/branch/master/etc/object-server.conf-sample
+
+sudo nano /etc/swift/account-server.conf
+
+[DEFAULT]
+bind_ip = 127.0.0.1
+bind_port = 6202
+user = swift
+swift_dir = /etc/swift
+devices = /srv/node
+mount_check = True
+
+[pipeline:main]
+pipeline = healthcheck recon account-server
+
+[filter:recon]
+use = egg:swift#recon
+recon_cache_path = /var/cache/swift
+
+sudo nano /etc/swift/container-server.conf
+
+[DEFAULT]
+bind_ip = 127.0.0.1
+bind_port = 6201
+user = swift
+swift_dir = /etc/swift
+devices = /srv/node
+mount_check = True
+
+[pipeline:main]
+pipeline = healthcheck recon container-server
+
+[filter:recon]
+use = egg:swift#recon
+recon_cache_path = /var/cache/swift
+
+sudo nano /etc/swift/object-server.conf
+
+[DEFAULT]
+bind_ip = 127.0.0.1
+bind_port = 6200
+user = swift
+swift_dir = /etc/swift
+devices = /srv/node
+mount_check = True
+
+[pipeline:main]
+pipeline = healthcheck recon object-server
+
+[filter:recon]
+use = egg:swift#recon
+recon_cache_path = /var/cache/swift
+recon_lock_path = /var/lock
+
+sudo chown -R swift:swift /srv/node
+
+mkdir -p /var/cache/swift
+sudo chown -R root:swift /var/cache/swift
+sudo chmod -R 775 /var/cache/swift
+
+
+sudo bash
+cd /etc/swift
+
+swift-ring-builder account.builder create 10 2 1
+
+swift-ring-builder account.builder add \
+  --region 1 --zone 1 --ip 127.0.0.1 --port 6202 --device sdb --weight 100
+
+swift-ring-builder account.builder add \
+  --region 1 --zone 2 --ip 127.0.0.1 --port 6202 --device sdc --weight 100
+
+swift-ring-builder account.builder
+
+swift-ring-builder account.builder rebalance
+
+
+swift-ring-builder container.builder create 10 2 1
+
+swift-ring-builder container.builder add \
+  --region 1 --zone 1 --ip 127.0.0.1 --port 6201 --device sdb --weight 100
+
+swift-ring-builder container.builder add \
+  --region 1 --zone 2 --ip 127.0.0.1 --port 6201 --device sdc --weight 100
+
+swift-ring-builder container.builder
+
+swift-ring-builder container.builder rebalance
+
+
+swift-ring-builder object.builder create 10 2 1
+
+swift-ring-builder object.builder add \
+  --region 1 --zone 1 --ip 127.0.0.1 --port 6200 --device sdb --weight 100
+
+swift-ring-builder object.builder add \
+  --region 1 --zone 2 --ip 127.0.0.1 --port 6200 --device sdc --weight 100
+
+swift-ring-builder object.builder
+
+swift-ring-builder object.builder rebalance
+
+
+curl -o /etc/swift/swift.conf \
+  https://opendev.org/openstack/swift/raw/branch/master/etc/swift.conf-sample
+
+
+
+openssl rand -hex 16
+openssl rand -hex 16
+
+sudo nano /etc/swift/swift.conf
+
+[swift-hash]
+swift_hash_path_suffix = HASH_PATH_SUFFIX
+swift_hash_path_prefix = HASH_PATH_PREFIX
+
+[storage-policy:0]
+name = Policy-0
+default = yes
+
+chown -R root:swift /etc/swift
+
+service memcached restart
+service swift-proxy restart
+
+swift-init all start
+
+. /home/ahmed/admin-openrc
+
+swift stat
+
+openstack container create data
+
+touch object-test-file
+sudo nano object-test-file
+This is test file.
+
+openstack object create data object-test-file
+
+openstack container list
+
+openstack object list data
+
+openstack object save data object-test-file
+
+
+//////////////Service Aodh//////////////
+
+sudo mysql -u root -p
+
+CREATE DATABASE aodh;
+CREATE USER 'aodh'@'localhost' IDENTIFIED BY 'AODH_DBPASS';
+GRANT ALL PRIVILEGES ON aodh.* TO 'aodh'@'localhost';
+CREATE USER 'aodh'@'%' IDENTIFIED BY 'AODH_DBPASS';
+GRANT ALL PRIVILEGES ON aodh.* TO 'aodh'@'%';
+FLUSH PRIVILEGES;
+
+. admin-openrc
+
+openstack user create --domain default \
+  --password-prompt aodh
+
+openstack role add --project service --user aodh admin
+
+openstack service create --name aodh \
+  --description "Telemetry" alarming
+
+openstack endpoint create --region RegionOne \
+  alarming public http://localhost:8042
+
+openstack endpoint create --region RegionOne \
+  alarming internal http://localhost:8042
+
+openstack endpoint create --region RegionOne \
+  alarming admin http://localhost:8042
+ 
+sudo apt-get install aodh-api aodh-evaluator aodh-notifier \
+  aodh-listener aodh-expirer python3-aodhclient
+
+sudo nano /etc/aodh/aodh.conf
+
+[DEFAULT]
+transport_url = rabbit://openstack:admin@localhost
+auth_strategy = keystone
+
+[database]
+connection = mysql+pymysql://aodh:AODH_DBPASS@localhost/aodh
+
+[keystone_authtoken]
+www_authenticate_uri = http://localhost:5000
+auth_url = http://localhost:5000
+memcached_servers = localhost:11211
+auth_type = password
+project_domain_id = default
+user_domain_id = default
+project_name = service
+username = aodh
+password = admin
+
+[service_credentials]
+auth_type = password
+auth_url = http://localhost:5000/v3
+project_domain_id = default
+user_domain_id = default
+project_name = service
+username = aodh
+password = admin
+interface = internalURL
+region_name = RegionOne
+
+sudo aodh-dbsync
+
+sudo service aodh-evaluator restart
+sudo service aodh-notifier restart
+sudo service aodh-listener restart
+
+
+
+
+
+
